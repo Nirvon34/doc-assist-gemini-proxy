@@ -11,9 +11,10 @@ if (!GEMINI_API_KEY) {
   console.error('⚠ GEMINI_API_KEY не задан');
 }
 
-// Актуальная модель
-// Можно поменять на 'gemini-1.5-pro-latest', если нужна "pro"
+// актуальная модель
 const GEMINI_MODEL = 'gemini-1.5-flash-latest';
+// используем стабильную версию API v1
+const GEMINI_API_VERSION = 'v1';
 
 const PORT = process.env.PORT || 3000;
 
@@ -25,7 +26,6 @@ app.get('/', (req, res) => {
 // ====== Основной маршрут для PHP: POST /chat ======
 app.post('/chat', async (req, res) => {
   try {
-    // Что приходит из PHP
     const { prompt, systemPrompt, userPrompt } = req.body || {};
 
     const userText = userPrompt || prompt;
@@ -37,9 +37,9 @@ app.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'No prompt provided' });
     }
 
-    // URL Gemini с актуальной моделью
+    // ВАЖНО: v1, а не v1beta
     const geminiUrl =
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent` +
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent` +
       `?key=${GEMINI_API_KEY}`;
 
     const body = {
