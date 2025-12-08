@@ -5,6 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
+// ====== Настройки Gemini ======
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
   console.error('⚠ GEMINI_API_KEY не задан');
@@ -12,80 +13,81 @@ if (!GEMINI_API_KEY) {
 
 const PORT = process.env.PORT || 3000;
 
+// Проверка, что прокси живой
 app.get('/', (req, res) => {
   res.send('Gemini proxy OK');
 });
 
-app.post('/analyze', async (req, res) => {
+// ====== Основной маршрут для PHP: POST /chat ======
+app.post('/chat', async (req, res) => {
   try {
-    const { text, extraNotes = '' } = req.body || {};
-    if (!text || typeof text !== 'string') {
-      return res.status(400).json({ ok: false, error: 'text is required' });
+    // Что приходит из PHP
+    // analyze_tender.php может слать либо { prompt: "..." },
+    // либо { systemPrompt: "...", userPrompt: "..." } — поддержим оба варианта
+    const { prompt, systemPrompt, userPrompt } = req.body || {};
+
+    const userText = prompt || userPrompt;
+    const systemText =
+      systemPrompt ||
+      'You are an assistant that analyzes tender documentation and answers in Russian.';
+
+    if (!userText) {
+      return res.status(400).json({ error: 'No prompt provided' });
     }
 
-    const maxLen = 15000;
-    let trimmed = text.trim();
-    if (trimmed.length > maxLen) {
-      trimmed = trimmed.slice(0, maxLen) + '\n\n[Текст обрезан для анализа]';
-    }
-
-    const system = `
-Ты помощник-аналитик тендерной документации в РФ.
-Твоя задача — на основе текста извлечь ключевые условия закупки
-и вернуть СТРОГО один JSON-объект без лишнего текста.
-`.trim();
-
-    const user = `Дополнительные пожелания заказчика: ${extraNotes}\n\nТЕКСТ:\n${trimmed}`;
+    // Запрос к Gemini
+    const geminiUrl =
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'
+      + `?key=${GEMINI_API_KEY}`;
 
     const body = {
       contents: [
         {
           role: 'user',
           parts: [
-            { text: system },
-            { text: user }
+            { text: `${systemText}\n\nПользовательский запрос:\n${userText}` }
           ]
         }
-      ],
-      generationConfig: {
-        response_mime_type: 'application/json'
-      }
+      ]
     };
 
-    const response = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': GEMINI_API_KEY
-        },
-        body: JSON.stringify(body)
-      }
-    );
-
-    const json = await response.json();
+    const response = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
 
     if (!response.ok) {
-      return res.status(response.status).json({ ok: false, error: json.error?.message });
+      const text = await response.text();
+      console.error('Gemini error:', response.status, text);
+      return res.status(500).json({
+        error: 'Gemini API error',
+        status: response.status,
+        body: text
+      });
     }
 
-    const textResp = json?.candidates?.[0]?.content?.parts?.[0]?.text;
-    let result;
+    const data = await response.json();
 
-    try {
-      const start = textResp.indexOf('{');
-      const end = textResp.lastIndexOf('}');
-      result = JSON.parse(textResp.slice(start, end + 1));
-    } catch {
-      return res.status(500).json({ ok: false, error: 'JSON parse error', raw: textResp });
-    }
+    const reply =
+      data?.candidates?.[0]?.content?.parts
+        ?.map(p => p.text || '')
+        .join(' ')
+        .trim() || '';
 
-    res.json({ ok: true, data: result });
-
-  } catch (e) {
-    res.status(500).json({ ok: false, error: 'Server error' });
+    return res.json({
+      reply,
+      raw: data
+    });
+  } catch (err) {
+    console.error('Proxy /chat error:', err);
+    return res.status(500).json({ error: 'Internal proxy error' });
   }
 });
 
-app.listen(PORT, () => console.log(`Gemini proxy listening on ${PORT}`));
+// Запуск сервера
+app.listen(PORT, () => {
+  console.log(`Gemini proxy listening on port ${PORT}`);
+});
