@@ -11,6 +11,10 @@ if (!GEMINI_API_KEY) {
   console.error('⚠ GEMINI_API_KEY не задан');
 }
 
+// Актуальная модель
+// Можно поменять на 'gemini-1.5-pro-latest', если нужна "pro"
+const GEMINI_MODEL = 'gemini-1.5-flash-latest';
+
 const PORT = process.env.PORT || 3000;
 
 // Проверка, что прокси живой
@@ -22,41 +26,44 @@ app.get('/', (req, res) => {
 app.post('/chat', async (req, res) => {
   try {
     // Что приходит из PHP
-    // analyze_tender.php может слать либо { prompt: "..." },
-    // либо { systemPrompt: "...", userPrompt: "..." } — поддержим оба варианта
     const { prompt, systemPrompt, userPrompt } = req.body || {};
 
-    const userText = prompt || userPrompt;
+    const userText = userPrompt || prompt;
     const systemText =
       systemPrompt ||
-      'You are an assistant that analyzes tender documentation and answers in Russian.';
+      'You are an assistant that analyzes tender documents and answers in Russian.';
 
     if (!userText) {
       return res.status(400).json({ error: 'No prompt provided' });
     }
 
-    // Запрос к Gemini
+    // URL Gemini с актуальной моделью
     const geminiUrl =
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'
-      + `?key=${GEMINI_API_KEY}`;
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent` +
+      `?key=${GEMINI_API_KEY}`;
 
     const body = {
       contents: [
         {
           role: 'user',
           parts: [
-            { text: `${systemText}\n\nПользовательский запрос:\n${userText}` }
-          ]
-        }
-      ]
+            {
+              text:
+                systemText +
+                '\n\nПользовательский запрос:\n' +
+                userText,
+            },
+          ],
+        },
+      ],
     };
 
     const response = await fetch(geminiUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -65,7 +72,7 @@ app.post('/chat', async (req, res) => {
       return res.status(500).json({
         error: 'Gemini API error',
         status: response.status,
-        body: text
+        body: text,
       });
     }
 
@@ -73,13 +80,13 @@ app.post('/chat', async (req, res) => {
 
     const reply =
       data?.candidates?.[0]?.content?.parts
-        ?.map(p => p.text || '')
+        ?.map((p) => p.text || '')
         .join(' ')
         .trim() || '';
 
     return res.json({
       reply,
-      raw: data
+      raw: data,
     });
   } catch (err) {
     console.error('Proxy /chat error:', err);
