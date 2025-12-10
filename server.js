@@ -6,13 +6,14 @@ app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
 // ====== Настройки Gemini ======
-const GEMINI_MODEL       = 'gemini-2.5-flash-preview-09-2025'; // или твоя модель
+const GEMINI_MODEL       = 'gemini-2.5-flash-preview-09-2025'; // можешь сменить на свою модель
 const GEMINI_API_VERSION = 'v1beta';
 
-// Можно передать либо GEMINI_API_KEYS (через запятую), либо старый GEMINI_API_KEY
+// Берём либо список ключей, либо один старый
 const RAW_KEYS =
-  process.env.GEMINI_API_KEYS ||
-  process.env.GEMINI_API_KEY   || '';
+  process.env.GEMINI_KEYS      ||  // основной список (как у тебя в Render)
+  process.env.GEMINI_API_KEYS  ||  // альтернативное имя, если захочешь
+  process.env.GEMINI_API_KEY   ||  ''; // одиночный ключ (старый вариант)
 
 const GEMINI_KEYS = RAW_KEYS
   .split(',')
@@ -20,14 +21,16 @@ const GEMINI_KEYS = RAW_KEYS
   .filter(Boolean);
 
 if (!GEMINI_KEYS.length) {
-  console.error('⚠ GEMINI_API_KEYS / GEMINI_API_KEY не заданы — нет ни одного ключа');
+  console.error('⚠ GEMINI_KEYS / GEMINI_API_KEYS / GEMINI_API_KEY не заданы — нет ни одного ключа');
+} else {
+  console.log('✅ Загружено Gemini ключей:', GEMINI_KEYS.length);
 }
 
 /**
- * Вспомогательная функция: вызов Gemini с ретраями по 503
- * и переключением ключей при 429 (quota).
+ * Вызов Gemini с ретраями по 503 и
+ * переключением на следующий ключ при 429 (quota).
  *
- * maxRetriesPerKey — сколько раз пробуем ОДИН ключ при 503.
+ * maxRetriesPerKey — сколько раз пробуем КАЖДЫЙ ключ при 503.
  */
 async function callGeminiWithRetry(payload, maxRetriesPerKey = 2) {
   if (!GEMINI_KEYS.length) {
@@ -40,7 +43,7 @@ async function callGeminiWithRetry(payload, maxRetriesPerKey = 2) {
 
   let lastError = null;
 
-  // Идём по ключам по очереди
+  // Перебираем ключи по очереди
   for (let keyIndex = 0; keyIndex < GEMINI_KEYS.length; keyIndex++) {
     const apiKey = GEMINI_KEYS[keyIndex];
     const url =
@@ -53,12 +56,12 @@ async function callGeminiWithRetry(payload, maxRetriesPerKey = 2) {
     let attempt = 0;
     let delayMs = 1500;
 
-    // Ретраи по 503 для ТЕКУЩЕГО ключа
     while (true) {
       attempt += 1;
 
       let resp;
       let text;
+
       try {
         resp = await fetch(url, {
           method: 'POST',
@@ -69,18 +72,20 @@ async function callGeminiWithRetry(payload, maxRetriesPerKey = 2) {
         });
         text = await resp.text();
       } catch (e) {
-        // сетевые ошибки — просто сохраняем и пробуем следующий ключ
-        console.warn(`Сетевая ошибка на ключе #${keyIndex + 1}:`, e);
+        console.warn(`⚠ Сетевая ошибка на ключе #${keyIndex + 1}:`, e);
         lastError = {
           ok: false,
           status: 0,
           body: String(e),
         };
-        break; // выходим из цикла ретраев, переходим к следующему ключу
+        break; // выходим из цикла по этому ключу, идём к следующему
       }
 
-      // если всё ок — возвращаем ответ
+      // Успешный ответ — отдаем его назад
       if (resp.ok) {
+        console.log(
+          `✅ Ответ от Gemini на ключе #${keyIndex + 1}, статус ${resp.status}`,
+        );
         return {
           ok: true,
           status: resp.status,
@@ -88,31 +93,30 @@ async function callGeminiWithRetry(payload, maxRetriesPerKey = 2) {
         };
       }
 
-      // ==== ОБРАБОТКА 503: ретраим этот же ключ с backoff ====
+      // ===== 503: временная проблема — ретраим этот же ключ с backoff =====
       if (resp.status === 503 && attempt <= maxRetriesPerKey + 1) {
         console.warn(
           `Gemini 503 (attempt ${attempt}) на ключе #${keyIndex + 1}, retry через ${delayMs}ms`,
         );
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await new Promise((r) => setTimeout(r, delayMs));
         delayMs *= 2;
         continue;
       }
 
-      // ==== ОБРАБОТКА 429: исчерпан лимит этого ключа — переключаемся на следующий ====
+      // ===== 429: у этого ключа / проекта закончился лимит — пробуем следующий =====
       if (resp.status === 429) {
         console.warn(
-          `Gemini 429 (quota) на ключе #${keyIndex + 1}, пробуем следующий ключ`,
+          `Gemini 429 (quota) на ключе #${keyIndex + 1}, переключаемся на следующий ключ`,
         );
         lastError = {
           ok: false,
           status: resp.status,
           body: text,
         };
-        // выходим из цикла ретраев по этому ключу => перейдём к следующему ключу
-        break;
+        break; // выходим из цикла по этому ключу, идём к следующему
       }
 
-      // ==== Любая другая ошибка: дальше крутить смысла нет, возвращаем ====
+      // ===== Любая другая ошибка: дальше крутить смысла нет =====
       console.warn(
         `Gemini ошибка ${resp.status} на ключе #${keyIndex + 1}, не ретраим`,
       );
@@ -123,10 +127,10 @@ async function callGeminiWithRetry(payload, maxRetriesPerKey = 2) {
       };
     }
 
-    // Переходим к следующему ключу (если был 429 / сеть / 503 без успеха)
+    // здесь просто переходим к следующему ключу, если был 429 / сеть / 503 без успеха
   }
 
-  // Если дошли сюда, значит все ключи отстрелялись с ошибкой
+  // Если дошли сюда — все ключи отстрелялись с ошибкой
   return (
     lastError || {
       ok: false,
@@ -135,6 +139,11 @@ async function callGeminiWithRetry(payload, maxRetriesPerKey = 2) {
     }
   );
 }
+
+// ====== Проверочный маршрут, что прокси живой ======
+app.get('/', (req, res) => {
+  res.send('Gemini proxy OK');
+});
 
 // ====== Основной маршрут: POST /chat ======
 app.post('/chat', async (req, res) => {
@@ -210,6 +219,7 @@ app.post('/chat', async (req, res) => {
   }
 });
 
+// ====== Запуск сервера ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Gemini proxy listening on', PORT);
