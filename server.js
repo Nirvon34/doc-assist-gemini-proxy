@@ -20,7 +20,7 @@ app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
 // ====== Настройки Gemini ======
-const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
+const GEMINI_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
 const GEMINI_API_VERSION = 'v1beta';
 
 // Берём либо список ключей, либо один старый
@@ -185,3 +185,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Gemini proxy listening on', PORT);
 });
+
